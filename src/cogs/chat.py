@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import logging
 import asyncio
+import os
 from services.db import db
 from services.ai import ai_service
 from services.autonomy import AutonomyEngine
@@ -13,6 +14,23 @@ class Chat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.autonomy_engine = AutonomyEngine(bot.user.id if bot.user else 0)
+        self.context_isolation_mode = os.getenv("CONTEXT_ISOLATION_MODE", "smart").strip().lower()
+
+    def _resolve_context_user_id(self, message, reply_reason: str):
+        mode = self.context_isolation_mode
+        if mode == "channel_user":
+            return message.author.id
+        if mode == "channel":
+            return None
+
+        # Smart mode: direct interactions use per-user memory; proactive replies use shared channel memory.
+        if mode == "smart":
+            if reply_reason in {"direct_mention", "direct_reply"}:
+                return message.author.id
+            return None
+
+        # Fallback for unexpected config values.
+        return None
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -26,6 +44,9 @@ class Chat(commands.Cog):
             if message.author == self.bot.user:
                 return
 
+            if not message.content or not message.content.strip():
+                return
+
             # 1. Log incoming message
             await db.log_message(
                 user_id=message.author.id,
@@ -35,14 +56,19 @@ class Chat(commands.Cog):
                 is_bot=message.author.bot
             )
 
-            # 2. Get recent context (includes the just logged user message)
-            recent_context = await db.get_recent_context(message.channel.id, limit=10)
+            # 2. Get shared context to evaluate autonomy trigger.
+            shared_context = await db.get_recent_context(channel_id=message.channel.id, limit=10)
 
-            # 3. Autonomy check
-            should_reply = await self.autonomy_engine.should_reply(message, recent_context)
-
-            if should_reply:
-                await self.handle_response(message, recent_context)
+            # 3. Autonomy check with reason.
+            reply_reason = await self.autonomy_engine.get_reply_reason(message, shared_context)
+            if reply_reason:
+                context_user_id = self._resolve_context_user_id(message, reply_reason)
+                response_context = await db.get_recent_context(
+                    channel_id=message.channel.id,
+                    limit=10,
+                    user_id=context_user_id,
+                )
+                await self.handle_response(message, response_context)
         except Exception as e:
             logger.exception("Message pipeline failed for message %s: %s", message.id, e)
 

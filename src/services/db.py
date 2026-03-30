@@ -70,17 +70,31 @@ class Database:
         async with pool.acquire() as connection:
             await connection.execute(query, user_id, channel_id, content, author_name, is_bot)
 
-    async def get_recent_context(self, channel_id: int, limit: int = 20) -> List[Dict]:
-        query = """
-        SELECT user_id, content, author_name, is_bot, created_at
-        FROM messages
-        WHERE channel_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2
-        """
+    async def get_recent_context(self, channel_id: int, limit: int = 20, user_id: int = None) -> List[Dict]:
+        if user_id is None:
+            query = """
+            SELECT user_id, content, author_name, is_bot, created_at
+            FROM messages
+            WHERE channel_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """
+            args = (channel_id, limit)
+        else:
+            # In channel_user mode, keep user-specific history plus bot messages in this channel.
+            query = """
+            SELECT user_id, content, author_name, is_bot, created_at
+            FROM messages
+            WHERE channel_id = $1
+            AND (user_id = $2 OR is_bot = TRUE)
+            ORDER BY created_at DESC
+            LIMIT $3
+            """
+            args = (channel_id, user_id, limit)
+
         pool = self._get_pool_or_raise()
         async with pool.acquire() as connection:
-            rows = await connection.fetch(query, channel_id, limit)
+            rows = await connection.fetch(query, *args)
             # Return reversed so it's chronological
             return [dict(row) for row in reversed(rows)]
 

@@ -9,6 +9,9 @@ This is an advanced Discord chatbot powered by OpenRouter (LLM) with autonomous 
 - **Context Awareness**: Remembers conversation history per channel using PostgreSQL.
 - **Configurable AI**: Supports any OpenRouter compatible model via environment variables.
 - **Fail-Fast Startup**: Exits immediately if required environment variables or PostgreSQL connectivity are missing.
+- **Autonomy Modes**: Can reply only when directly addressed or also join conversations autonomously.
+- **Channel Allowlist for Autonomy**: Autonomous jump-ins can be restricted to selected channel IDs.
+- **Context Isolation Option**: Can keep memory shared by channel or isolated per user within a channel.
 
 ## Setup
 
@@ -26,6 +29,12 @@ This is an advanced Discord chatbot powered by OpenRouter (LLM) with autonomous 
         - Optional:
             - `MODEL_NAME` (default: `anthropic/claude-3-opus`)
             - `SYSTEM_PROMPT` (default: `You are a helpful assistant.`)
+            - `AUTONOMY_MODE` (`direct-only`, `balanced`, `social`; default `balanced`)
+            - `AUTONOMY_ALLOWED_CHANNEL_IDS` (comma-separated channel IDs for autonomous replies)
+            - `CONTINUE_REPLY_CHANCE` (default `0.4`)
+            - `KEYWORD_REPLY_CHANCE` (default `0.6`)
+            - `RANDOM_INTERJECTION_CHANCE` (default `0.02`)
+            - `CONTEXT_ISOLATION_MODE` (`channel`, `channel_user`, or `smart`; default `smart`)
 
 4.  **Database Setup**:
     - Ensure you have a PostgreSQL database running.
@@ -66,6 +75,14 @@ If startup exits immediately, verify required env vars and PostgreSQL reachabili
     ```bash
     python tests/test_logic.py
     ```
+
+## Production Notes
+
+- Direct mentions and direct replies to the bot are always handled.
+- Autonomous participation is controlled by `AUTONOMY_MODE` and channel allowlist settings.
+- If `AUTONOMY_ALLOWED_CHANNEL_IDS` is set, autonomous (non-direct) replies only occur in listed channels.
+- `CONTEXT_ISOLATION_MODE=smart` makes direct ping/reply use per-user memory and proactive jump-ins use shared channel memory.
+- To force strict no-mixing behavior everywhere, set `CONTEXT_ISOLATION_MODE=channel_user`.
 
 ## Structure
 

@@ -37,43 +37,90 @@ async def test_humanizer():
     print(f"Typing delay test passed: {typing_delay}")
 
 async def test_autonomy():
-    engine = AutonomyEngine(bot_id=123)
+    with patch.dict(
+        os.environ,
+        {
+            "AUTONOMY_MODE": "balanced",
+            "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+            "CONTINUE_REPLY_CHANCE": "0.4",
+            "KEYWORD_REPLY_CHANCE": "0.6",
+            "RANDOM_INTERJECTION_CHANCE": "0.02",
+        },
+        clear=False,
+    ):
+        engine = AutonomyEngine(bot_id=123)
 
-    # Test mention
-    msg = MagicMock()
-    msg.mentions = [MagicMock(id=123)]
-    msg.reference = None
-    msg.channel = MagicMock()
-    should = await engine.should_reply(msg, [])
-    assert should == True
-    print("Autonomy mention test passed.")
-
-    # Test keyword
-    msg.mentions = []
-    msg.content = "Can the AI help me?"
-    # Mock random to force True
-    with patch('random.random', return_value=0.1):
+        # Test mention
+        msg = MagicMock()
+        msg.mentions = [MagicMock(id=123)]
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 111
         should = await engine.should_reply(msg, [])
         assert should == True
-    print("Autonomy keyword test passed.")
+        print("Autonomy mention test passed.")
 
-    # Test ignore
-    msg.content = "Just chatting."
-    with patch('random.random', return_value=0.99):
+        # Test keyword
+        msg.mentions = []
+        msg.content = "Can the AI help me?"
+        # Mock random to force True
+        with patch('random.random', return_value=0.1):
+            should = await engine.should_reply(msg, [])
+            assert should == True
+        print("Autonomy keyword test passed.")
+
+        # Test ignore
+        msg.content = "Just chatting."
+        with patch('random.random', return_value=0.99):
+            should = await engine.should_reply(msg, [])
+            assert should == False
+        print("Autonomy ignore test passed.")
+
+        # Test fallback fetch for reply references when resolved message is not cached
+        msg.mentions = []
+        msg.content = "replying"
+        msg.reference = MagicMock()
+        msg.reference.resolved = None
+        msg.reference.message_id = 456
+        msg.channel.fetch_message = AsyncMock(return_value=FakeReferencedMessage(123))
         should = await engine.should_reply(msg, [])
-        assert should == False
-    print("Autonomy ignore test passed.")
+        assert should == True
+        print("Autonomy reply-reference fallback test passed.")
 
-    # Test fallback fetch for reply references when resolved message is not cached
-    msg.mentions = []
-    msg.content = "replying"
-    msg.reference = MagicMock()
-    msg.reference.resolved = None
-    msg.reference.message_id = 456
-    msg.channel.fetch_message = AsyncMock(return_value=FakeReferencedMessage(123))
-    should = await engine.should_reply(msg, [])
-    assert should == True
-    print("Autonomy reply-reference fallback test passed.")
+    # direct-only mode should block non-direct proactive replies
+    with patch.dict(os.environ, {"AUTONOMY_MODE": "direct-only"}, clear=False):
+        engine = AutonomyEngine(bot_id=123)
+        msg = MagicMock()
+        msg.mentions = []
+        msg.content = "hello"
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 222
+        with patch('random.random', return_value=0.0):
+            should = await engine.should_reply(msg, [])
+            assert should == False
+        print("Autonomy direct-only mode test passed.")
+
+    # allowlist should block proactive replies in non-allowlisted channels
+    with patch.dict(
+        os.environ,
+        {
+            "AUTONOMY_MODE": "balanced",
+            "AUTONOMY_ALLOWED_CHANNEL_IDS": "999",
+        },
+        clear=False,
+    ):
+        engine = AutonomyEngine(bot_id=123)
+        msg = MagicMock()
+        msg.mentions = []
+        msg.content = "hello ai"
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 123456
+        with patch('random.random', return_value=0.0):
+            should = await engine.should_reply(msg, [])
+            assert should == False
+        print("Autonomy allowlist test passed.")
 
 
 def test_required_env_validation():
