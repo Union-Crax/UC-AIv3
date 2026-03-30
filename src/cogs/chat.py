@@ -3,6 +3,7 @@ from discord.ext import commands
 import logging
 import asyncio
 import os
+import random
 from collections import Counter
 from services.db import db
 from services.ai import ai_service
@@ -38,6 +39,28 @@ class Chat(commands.Cog):
 
     async def _execute_cross_channel_send(self, message, target_channel):
         try:
+            # Sometimes acknowledge in the original channel first (like a real person), sometimes say nothing.
+            if random.random() < 0.6:
+                ack_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Write a very short casual acknowledgment (max 6 words) that you're heading to another channel. "
+                            "Examples: 'Sure thing!', 'on it', 'heading there', 'say less'. "
+                            "No emojis required, no mentions, just the words."
+                        ),
+                    }
+                ]
+                async with message.channel.typing():
+                    await asyncio.sleep(humanizer.calculate_thinking_delay())
+                    ack = await ai_service.generate_response(ack_messages)
+                if ack and ack.strip():
+                    await asyncio.sleep(humanizer.calculate_typing_delay(ack))
+                    await message.reply(ack.strip(), mention_author=False)
+
+            # Small natural pause before appearing in the other channel.
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+
             # Pull recent target-channel context so the AI fits the vibe there.
             target_context = await db.get_recent_context(channel_id=target_channel.id, limit=8)
             bot_user_id = self.bot.user.id if self.bot.user else None
@@ -61,10 +84,12 @@ class Chat(commands.Cog):
                     ai_messages.append({"role": role, "content": content})
 
             async with target_channel.typing():
+                await asyncio.sleep(humanizer.calculate_thinking_delay())
                 generated = await ai_service.generate_response(ai_messages)
+                if generated and generated.strip():
+                    await asyncio.sleep(humanizer.calculate_typing_delay(generated))
 
             if not generated or not generated.strip():
-                await message.reply("ai blanked, couldn't make it over there", mention_author=False)
                 return
 
             await target_channel.send(generated)
