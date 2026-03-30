@@ -8,6 +8,7 @@ This is an advanced Discord chatbot powered by OpenRouter (LLM) with autonomous 
 - **Human-like Behavior**: Simulates reading time, thinking pauses, and typing speed based on message length.
 - **Context Awareness**: Remembers conversation history per channel using PostgreSQL.
 - **Configurable AI**: Supports any OpenRouter compatible model via environment variables.
+- **Fail-Fast Startup**: Exits immediately if required environment variables or PostgreSQL connectivity are missing.
 
 ## Setup
 
@@ -17,24 +18,53 @@ This is an advanced Discord chatbot powered by OpenRouter (LLM) with autonomous 
     pip install -r requirements.txt
     ```
 3.  **Configure Environment**:
-    - Copy `.env.example` to `.env`.
-    - Fill in your `DISCORD_TOKEN`, `OPENROUTER_API_KEY`, and `DATABASE_URL`.
-    - Adjust `MODEL_NAME` and `SYSTEM_PROMPT` as desired.
+        - Create a `.env` file in the project root.
+        - Required:
+            - `DISCORD_TOKEN`
+            - `OPENROUTER_API_KEY`
+            - `DATABASE_URL`
+        - Optional:
+            - `MODEL_NAME` (default: `anthropic/claude-3-opus`)
+            - `SYSTEM_PROMPT` (default: `You are a helpful assistant.`)
 
 4.  **Database Setup**:
     - Ensure you have a PostgreSQL database running.
-    - The bot will automatically create the necessary `messages` table on startup.
+    - The bot will automatically create the necessary `messages` table and indexes on startup.
+    - If database connection fails, startup exits by design.
+        - Optional preflight check:
+            ```bash
+            python setup_db.py
+            ```
 
 5.  **Run the Bot**:
     ```bash
-    python3 src/main.py
+     python -m src.main
     ```
+
+## Linux/VPS Quick Start
+
+1. Install Python 3.10+.
+2. Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+3. Export required environment variables or provide them in `.env`.
+4. Start with:
+    ```bash
+    python -m src.main
+    ```
+5. Confirm startup logs include:
+    - `Connected to the database.`
+    - `Bot setup complete.`
+    - `Logged in as ...`
+
+If startup exits immediately, verify required env vars and PostgreSQL reachability first.
 
 ## Development
 
 - **Run Tests**:
     ```bash
-    python3 tests/test_logic.py
+    python tests/test_logic.py
     ```
 
 ## Structure

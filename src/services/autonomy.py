@@ -1,5 +1,4 @@
 import random
-import re
 import logging
 from typing import List, Dict
 
@@ -22,11 +21,20 @@ class AutonomyEngine:
 
         # 2. Reply to a message the bot sent (Unlikely unless user explicitly replies)
         if message.reference:
-            # Note: resolved might be None if message not in cache, but we can try to fetch or check message_id
-             # For simplicity, if resolved is available:
-            if message.reference.resolved and message.reference.resolved.author.id == self.bot_id:
-                 logger.info("Reply to bot's message detected.")
-                 return True
+            resolved = message.reference.resolved
+            if resolved and getattr(resolved, "author", None) and resolved.author.id == self.bot_id:
+                logger.info("Reply to bot's message detected (cached reference).")
+                return True
+
+            # Fallback for uncached references.
+            try:
+                if message.reference.message_id:
+                    referenced = await message.channel.fetch_message(message.reference.message_id)
+                    if referenced.author.id == self.bot_id:
+                        logger.info("Reply to bot's message detected (fetched reference).")
+                        return True
+            except Exception as exc:
+                logger.debug("Unable to resolve replied-to message: %s", exc)
 
         # 3. Analyze Recent Context for "interest"
         # If the bot spoke recently (e.g., in the last 2-3 messages), it's more likely to continue.

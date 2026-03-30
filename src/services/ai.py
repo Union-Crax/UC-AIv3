@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -23,17 +24,26 @@ class AI:
         if not self.client:
             return "Error: AI not configured."
 
-        try:
-            # Prepend system prompt if not present in messages or handle it here
-            formatted_messages = [{"role": "system", "content": self.system_prompt}] + messages
+        # Prepend system prompt if not present in messages or handle it here.
+        formatted_messages = [{"role": "system", "content": self.system_prompt}] + messages
 
-            completion = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=formatted_messages,
-            )
-            return completion.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            return "Error generating response."
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                completion = await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=formatted_messages,
+                    timeout=45,
+                )
+                return completion.choices[0].message.content
+            except Exception as e:
+                is_last_attempt = attempt == max_attempts
+                logger.warning("AI request failed (attempt %s/%s): %s", attempt, max_attempts, e)
+                if is_last_attempt:
+                    logger.error("Error generating response after retries.")
+                    return "I hit a temporary issue generating a response. Please try again."
+
+                # Simple exponential backoff for transient upstream issues.
+                await asyncio.sleep(2 ** (attempt - 1))
 
 ai_service = AI()
