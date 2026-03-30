@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 load_dotenv(dotenv_path=DOTENV_PATH, override=False)
 
 # If shell variables are present but blank, allow .env values to take precedence.
-if not os.getenv("DATABASE_URL") or not os.getenv("DISCORD_TOKEN") or not os.getenv("OPENROUTER_API_KEY"):
+if not os.getenv("DATABASE_URL") or not os.getenv("DISCORD_TOKEN") or not os.getenv("GROQ_API_KEY"):
     load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
-REQUIRED_ENV_VARS = ["DISCORD_TOKEN", "OPENROUTER_API_KEY", "DATABASE_URL"]
+REQUIRED_ENV_VARS = ["DISCORD_TOKEN", "GROQ_API_KEY", "DATABASE_URL"]
 
 
 def get_missing_required_env_vars():

@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 class AI:
     def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
-        self.model_name = os.getenv("MODEL_NAME", "anthropic/claude-3-opus")
+        self.api_key = os.getenv("GROQ_API_KEY")
+        self.model_name = os.getenv("MODEL_NAME", "llama3-8b-8192")
         self.system_prompt = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant.")
         self.max_response_tokens = self._parse_int_env("MAX_RESPONSE_TOKENS", default=256, min_value=32, max_value=4096)
         self.max_response_chars = self._parse_int_env("MAX_RESPONSE_CHARS", default=260, min_value=80, max_value=1200)
@@ -20,7 +20,7 @@ class AI:
         self.temperature = self._parse_float_env("MODEL_TEMPERATURE", default=0.5, min_value=0.0, max_value=1.5)
 
         if not self.api_key:
-            logger.warning("OPENROUTER_API_KEY is not set. AI features will not work.")
+            logger.warning("GROQ_API_KEY is not set. AI features will not work.")
             self.client = None
         elif AsyncOpenAI is None:
             logger.warning("openai package is not installed. AI features will not work until dependencies are installed.")
@@ -28,7 +28,7 @@ class AI:
         else:
             self.client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url="https://openrouter.ai/api/v1",
+                base_url="https://api.groq.com/openai/v1",
             )
 
     def _parse_int_env(self, key: str, default: int, min_value: int, max_value: int) -> int:

@@ -230,13 +230,13 @@ async def test_autonomy():
 
 
 def test_required_env_validation():
-    with patch.dict(os.environ, {"DISCORD_TOKEN": "", "OPENROUTER_API_KEY": "k", "DATABASE_URL": "db"}, clear=False):
+    with patch.dict(os.environ, {"DISCORD_TOKEN": "", "GROQ_API_KEY": "k", "DATABASE_URL": "db"}, clear=False):
         missing = get_missing_required_env_vars()
         assert "DISCORD_TOKEN" in missing
 
     with patch.dict(
         os.environ,
-        {"DISCORD_TOKEN": "t", "OPENROUTER_API_KEY": "k", "DATABASE_URL": "postgres://localhost/db"},
+        {"DISCORD_TOKEN": "t", "GROQ_API_KEY": "k", "DATABASE_URL": "postgres://localhost/db"},
         clear=False,
     ):
         missing = get_missing_required_env_vars()
