@@ -54,6 +54,7 @@ async def test_autonomy():
 
         # Test mention
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = [MagicMock(id=123)]
         msg.reference = None
         msg.channel = MagicMock()
@@ -93,6 +94,7 @@ async def test_autonomy():
     with patch.dict(os.environ, {"AUTONOMY_MODE": "direct-only"}, clear=False):
         engine = AutonomyEngine(bot_id=123)
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = []
         msg.content = "hello"
         msg.reference = None
@@ -114,6 +116,7 @@ async def test_autonomy():
     ):
         engine = AutonomyEngine(bot_id=123)
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = []
         msg.content = "hello ai"
         msg.reference = None
@@ -137,6 +140,7 @@ async def test_autonomy():
     ):
         engine = AutonomyEngine(bot_id=123)
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = [MagicMock(id=999, bot=True)]
         msg.content = "@OtherBot can you help"
         msg.reference = None
@@ -160,6 +164,7 @@ async def test_autonomy():
     ):
         engine = AutonomyEngine(bot_id=123)
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = [MagicMock(id=999, bot=True), MagicMock(id=123, bot=True)]
         msg.content = "i was talking to <@123>"
         msg.reference = MagicMock()
@@ -187,6 +192,7 @@ async def test_autonomy():
     ):
         engine = AutonomyEngine(bot_id=123)
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = []
         msg.content = "anyone know why this bug is happening?"
         msg.reference = None
@@ -209,6 +215,7 @@ async def test_autonomy():
     ):
         engine = AutonomyEngine(bot_id=123)
         msg = MagicMock()
+        msg.author = FakeAuthor(42, is_bot=False)
         msg.mentions = []
         msg.content = "random chat"
         msg.reference = None
@@ -252,8 +259,85 @@ def test_ai_sanitizer():
 
     print("AI sanitizer tests passed.")
 
+
+async def test_friendly_fire():
+    """Friendly-fire: two UC-AIv3 instances should be able to bat messages back and forth,
+    but stop after BOT_CONVO_MAX_TURNS exchanges to prevent infinite loops."""
+
+    env_base = {
+        "AUTONOMY_MODE": "social",
+        "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+        "PROACTIVE_COOLDOWN_SECONDS": "0",
+        "FRIENDLY_BOT_IDS": "777",   # ID of the other UC-AIv3 instance
+        "BOT_CONVO_MAX_TURNS": "2",
+    }
+
+    with patch.dict(os.environ, env_base, clear=False):
+        engine = AutonomyEngine(bot_id=123)
+
+        # Friendly bot directly mentions this bot — should respond.
+        msg = MagicMock()
+        msg.author = FakeAuthor(777, is_bot=True)
+        msg.mentions = [MagicMock(id=123)]
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 500
+        result = await engine.get_reply_reason(msg, [])
+        assert result == "direct_mention", f"Expected direct_mention, got {result}"
+        print("Friendly-fire: friendly bot mention triggers response — passed.")
+
+        # Friendly bot replies to our message — should respond.
+        msg2 = MagicMock()
+        msg2.author = FakeAuthor(777, is_bot=True)
+        msg2.mentions = []
+        msg2.reference = MagicMock()
+        msg2.reference.resolved = FakeReferencedMessage(123, author_is_bot=True)
+        msg2.reference.message_id = 999
+        msg2.channel = MagicMock()
+        msg2.channel.id = 500
+        result2 = await engine.get_reply_reason(msg2, [])
+        assert result2 == "direct_reply", f"Expected direct_reply, got {result2}"
+        print("Friendly-fire: friendly bot reply triggers response — passed.")
+
+        # After BOT_CONVO_MAX_TURNS exchanges, bot should disengage.
+        # Already 2 turns recorded (one direct_mention + one direct_reply).
+        # One more to hit the limit of 3.
+        msg3 = MagicMock()
+        msg3.author = FakeAuthor(777, is_bot=True)
+        msg3.mentions = [MagicMock(id=123)]
+        msg3.reference = None
+        msg3.channel = MagicMock()
+        msg3.channel.id = 500
+        result3 = await engine.get_reply_reason(msg3, [])
+        assert result3 is None, f"Expected None (turn limit reached), got {result3}"
+        print("Friendly-fire: turn limit reached, bot disengages — passed.")
+
+        # A human speaking resets the turn counter — bot should engage again.
+        human_msg = MagicMock()
+        human_msg.author = FakeAuthor(42, is_bot=False)
+        human_msg.mentions = [MagicMock(id=123)]
+        human_msg.reference = None
+        human_msg.channel = MagicMock()
+        human_msg.channel.id = 500
+        result_human = await engine.get_reply_reason(human_msg, [])
+        assert result_human == "direct_mention", f"Expected direct_mention after reset, got {result_human}"
+        print("Friendly-fire: human resets turn counter, bot re-engages — passed.")
+
+        # Non-friendly bot should NOT trigger a response.
+        hostile_msg = MagicMock()
+        hostile_msg.author = FakeAuthor(888, is_bot=True)
+        hostile_msg.mentions = [MagicMock(id=123)]
+        hostile_msg.reference = None
+        hostile_msg.channel = MagicMock()
+        hostile_msg.channel.id = 500
+        result_non_friendly = await engine.get_reply_reason(hostile_msg, [])
+        assert result_non_friendly is None, f"Expected None for non-friendly bot, got {result_non_friendly}"
+        print("Friendly-fire: non-friendly bot does not trigger response — passed.")
+
+
 if __name__ == "__main__":
     asyncio.run(test_humanizer())
     asyncio.run(test_autonomy())
     test_required_env_validation()
     test_ai_sanitizer()
+    asyncio.run(test_friendly_fire())

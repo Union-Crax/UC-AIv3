@@ -21,6 +21,10 @@ class AutonomyEngine:
         self.proactive_cooldown_seconds = self._parse_int_env("PROACTIVE_COOLDOWN_SECONDS", 45, 0, 3600)
         self.allowed_channel_ids = self._parse_channel_ids(os.getenv("AUTONOMY_ALLOWED_CHANNEL_IDS", ""))
         self.last_proactive_reply_by_channel = {}
+        # Friendly-fire: bot IDs that are allowed to interact directly with this bot.
+        self.friendly_bot_ids = self._parse_channel_ids(os.getenv("FRIENDLY_BOT_IDS", ""))
+        self.bot_convo_max_turns = self._parse_int_env("BOT_CONVO_MAX_TURNS", 6, 1, 20)
+        self._bot_convo_turns_by_channel: dict = {}
 
     def _clamp_probability(self, raw_value: str) -> float:
         try:
@@ -49,6 +53,18 @@ class AutonomyEngine:
             return default
         return max(min_value, min(parsed, max_value))
 
+    def _is_friendly_bot(self, user_id: int) -> bool:
+        return user_id in self.friendly_bot_ids
+
+    def _record_bot_turn(self, channel_id: int):
+        self._bot_convo_turns_by_channel[channel_id] = self._bot_convo_turns_by_channel.get(channel_id, 0) + 1
+
+    def _reset_bot_turns(self, channel_id: int):
+        self._bot_convo_turns_by_channel.pop(channel_id, None)
+
+    def _bot_turns_exceeded(self, channel_id: int) -> bool:
+        return self._bot_convo_turns_by_channel.get(channel_id, 0) >= self.bot_convo_max_turns
+
     def _cooldown_active(self, channel_id: int) -> bool:
         if self.proactive_cooldown_seconds <= 0:
             return False
@@ -76,7 +92,9 @@ class AutonomyEngine:
 
     def _targets_other_bot(self, message) -> bool:
         """
-        Return True when message appears directed to another bot account.
+        Return True when message appears directed to a non-friendly bot account.
+        Friendly bots (FRIENDLY_BOT_IDS) are exempted so humans conversing with
+        them can still attract proactive jump-ins.
         """
         mentions = getattr(message, "mentions", [])
 
@@ -85,14 +103,16 @@ class AutonomyEngine:
             return False
 
         for mentioned_user in mentions:
-            if getattr(mentioned_user, "id", None) != self.bot_id and getattr(mentioned_user, "bot", False):
+            uid = getattr(mentioned_user, "id", None)
+            if uid != self.bot_id and getattr(mentioned_user, "bot", False) and not self._is_friendly_bot(uid):
                 return True
 
         if message.reference:
             resolved = message.reference.resolved
             if resolved and getattr(resolved, "author", None):
                 author = resolved.author
-                if getattr(author, "id", None) != self.bot_id and getattr(author, "bot", False):
+                uid = getattr(author, "id", None)
+                if uid != self.bot_id and getattr(author, "bot", False) and not self._is_friendly_bot(uid):
                     return True
 
         return False
@@ -109,8 +129,23 @@ class AutonomyEngine:
         """
         mode = self.mode if self.mode in {"direct-only", "balanced", "social"} else "balanced"
 
+        sender_is_bot = message.author.bot
+        sender_is_friendly = sender_is_bot and self._is_friendly_bot(message.author.id)
+
+        # Reset bot-conversation turn counter whenever a human speaks.
+        if not sender_is_bot:
+            self._reset_bot_turns(message.channel.id)
+
         # 1. Direct Mention
         if self.bot_id in [user.id for user in message.mentions]:
+            if sender_is_bot and not sender_is_friendly:
+                # Non-friendly bots cannot engage this bot even via direct mention.
+                return None
+            if sender_is_friendly:
+                if self._bot_turns_exceeded(message.channel.id):
+                    logger.info("Friendly-fire turn limit reached; disengaging from bot conversation.")
+                    return None
+                self._record_bot_turn(message.channel.id)
             logger.info("Direct mention detected.")
             return "direct_mention"
 
@@ -118,6 +153,13 @@ class AutonomyEngine:
         if message.reference:
             resolved = message.reference.resolved
             if resolved and getattr(resolved, "author", None) and resolved.author.id == self.bot_id:
+                if sender_is_bot and not sender_is_friendly:
+                    return None
+                if sender_is_friendly:
+                    if self._bot_turns_exceeded(message.channel.id):
+                        logger.info("Friendly-fire turn limit reached; disengaging from bot conversation.")
+                        return None
+                    self._record_bot_turn(message.channel.id)
                 logger.info("Reply to bot's message detected (cached reference).")
                 return "direct_reply"
 
@@ -126,10 +168,21 @@ class AutonomyEngine:
                 if message.reference.message_id:
                     referenced = await message.channel.fetch_message(message.reference.message_id)
                     if referenced.author.id == self.bot_id:
+                        if sender_is_bot and not sender_is_friendly:
+                            return None
+                        if sender_is_friendly:
+                            if self._bot_turns_exceeded(message.channel.id):
+                                logger.info("Friendly-fire turn limit reached; disengaging from bot conversation.")
+                                return None
+                            self._record_bot_turn(message.channel.id)
                         logger.info("Reply to bot's message detected (fetched reference).")
                         return "direct_reply"
             except Exception as exc:
                 logger.debug("Unable to resolve replied-to message: %s", exc)
+
+        # Non-friendly bot messages beyond direct interactions are ignored.
+        if sender_is_bot:
+            return None
 
         # In direct-only mode, only explicit direct interactions can trigger a response.
         if mode == "direct-only":
