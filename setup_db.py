@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
+DOTENV_PATH = os.path.join(ROOT_DIR, ".env")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
@@ -16,7 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
-    load_dotenv()
+    # Load project-local .env explicitly to avoid cwd-dependent behavior.
+    load_dotenv(dotenv_path=DOTENV_PATH, override=False)
+
+    # If a shell variable exists but is blank, let .env replace it for local runs.
+    if not os.getenv("DATABASE_URL"):
+        load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
     if not os.getenv("DATABASE_URL"):
         logger.error("DATABASE_URL is not set.")

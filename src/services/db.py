@@ -8,9 +8,10 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self):
         self.pool = None
-        self.db_url = os.getenv("DATABASE_URL")
+        self.db_url = None
 
     async def connect(self):
+        self.db_url = os.getenv("DATABASE_URL")
         if not self.db_url:
             raise RuntimeError("DATABASE_URL is not set.")
 

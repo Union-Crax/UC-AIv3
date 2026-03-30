@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 # Ensure local absolute imports work when running either `python -m src.main` or `python src/main.py`.
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(CURRENT_DIR)
+DOTENV_PATH = os.path.join(ROOT_DIR, ".env")
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
@@ -17,7 +19,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path=DOTENV_PATH, override=False)
+
+# If shell variables are present but blank, allow .env values to take precedence.
+if not os.getenv("DATABASE_URL") or not os.getenv("DISCORD_TOKEN") or not os.getenv("OPENROUTER_API_KEY"):
+    load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
 REQUIRED_ENV_VARS = ["DISCORD_TOKEN", "OPENROUTER_API_KEY", "DATABASE_URL"]
 
