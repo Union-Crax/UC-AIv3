@@ -28,6 +28,7 @@ This is an advanced Discord chatbot powered by OpenRouter (LLM) with autonomous 
             - `DATABASE_URL`
         - Optional:
             - `MODEL_NAME` (default: `anthropic/claude-3-opus`)
+            - `MAX_RESPONSE_TOKENS` (default `256`, helps control OpenRouter cost and 402 token-limit failures)
             - `SYSTEM_PROMPT` (default: `You are a helpful assistant.`)
             - `AUTONOMY_MODE` (`direct-only`, `balanced`, `social`; default `balanced`)
             - `AUTONOMY_ALLOWED_CHANNEL_IDS` (comma-separated channel IDs for autonomous replies)

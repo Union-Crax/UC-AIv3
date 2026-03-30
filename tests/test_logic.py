@@ -7,18 +7,20 @@ from unittest.mock import MagicMock, AsyncMock, patch
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from services.autonomy import AutonomyEngine
+from services.ai import AI
 from utils.humanizer import Humanizer
 from main import get_missing_required_env_vars
 
 
 class FakeAuthor:
-    def __init__(self, user_id):
+    def __init__(self, user_id, is_bot=False):
         self.id = user_id
+        self.bot = is_bot
 
 
 class FakeReferencedMessage:
-    def __init__(self, author_id):
-        self.author = FakeAuthor(author_id)
+    def __init__(self, author_id, author_is_bot=False):
+        self.author = FakeAuthor(author_id, is_bot=author_is_bot)
 
 async def test_humanizer():
     h = Humanizer(wpm_min=60, wpm_max=90, reading_wpm=200)
@@ -122,6 +124,103 @@ async def test_autonomy():
             assert should == False
         print("Autonomy allowlist test passed.")
 
+    # should not proactively jump in when message is directed at another bot
+    with patch.dict(
+        os.environ,
+        {
+            "AUTONOMY_MODE": "social",
+            "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+            "RANDOM_INTERJECTION_CHANCE": "1.0",
+            "PROACTIVE_COOLDOWN_SECONDS": "0",
+        },
+        clear=False,
+    ):
+        engine = AutonomyEngine(bot_id=123)
+        msg = MagicMock()
+        msg.mentions = [MagicMock(id=999, bot=True)]
+        msg.content = "@OtherBot can you help"
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 333
+        with patch('random.random', return_value=0.0):
+            should = await engine.should_reply(msg, [])
+            assert should == False
+        print("Autonomy target-other-bot guard test passed.")
+
+    # if user explicitly mentions this bot, it should still reply even when another bot is referenced
+    with patch.dict(
+        os.environ,
+        {
+            "AUTONOMY_MODE": "social",
+            "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+            "RANDOM_INTERJECTION_CHANCE": "1.0",
+            "PROACTIVE_COOLDOWN_SECONDS": "0",
+        },
+        clear=False,
+    ):
+        engine = AutonomyEngine(bot_id=123)
+        msg = MagicMock()
+        msg.mentions = [MagicMock(id=999, bot=True), MagicMock(id=123, bot=True)]
+        msg.content = "i was talking to <@123>"
+        msg.reference = MagicMock()
+        msg.reference.resolved = FakeReferencedMessage(999, author_is_bot=True)
+        msg.reference.message_id = 111
+        msg.channel = MagicMock()
+        msg.channel.id = 334
+        should = await engine.should_reply(msg, [])
+        assert should == True
+        print("Autonomy explicit-self-mention override test passed.")
+
+    # weighted proactive signal should trigger even without direct mention
+    with patch.dict(
+        os.environ,
+        {
+            "AUTONOMY_MODE": "balanced",
+            "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+            "PROACTIVE_SCORE_THRESHOLD": "0.5",
+            "SIGNAL_QUESTION_BONUS": "0.3",
+            "SIGNAL_ENGAGEMENT_BONUS": "0.3",
+            "SIGNAL_KEYWORD_BONUS": "0.3",
+            "PROACTIVE_COOLDOWN_SECONDS": "0",
+        },
+        clear=False,
+    ):
+        engine = AutonomyEngine(bot_id=123)
+        msg = MagicMock()
+        msg.mentions = []
+        msg.content = "anyone know why this bug is happening?"
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 777
+        should = await engine.should_reply(msg, [])
+        assert should == True
+        print("Autonomy weighted proactive signal test passed.")
+
+    # proactive cooldown should suppress immediate repeated jump-ins in same channel
+    with patch.dict(
+        os.environ,
+        {
+            "AUTONOMY_MODE": "balanced",
+            "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+            "RANDOM_INTERJECTION_CHANCE": "1.0",
+            "PROACTIVE_COOLDOWN_SECONDS": "999",
+        },
+        clear=False,
+    ):
+        engine = AutonomyEngine(bot_id=123)
+        msg = MagicMock()
+        msg.mentions = []
+        msg.content = "random chat"
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 888
+        with patch('random.random', return_value=0.0):
+            first = await engine.should_reply(msg, [])
+            second = await engine.should_reply(msg, [])
+        assert first == True
+        assert second == False
+        print("Autonomy proactive cooldown test passed.")
+
 
 def test_required_env_validation():
     with patch.dict(os.environ, {"DISCORD_TOKEN": "", "OPENROUTER_API_KEY": "k", "DATABASE_URL": "db"}, clear=False):
@@ -138,7 +237,23 @@ def test_required_env_validation():
 
     print("Required env validation tests passed.")
 
+
+def test_ai_sanitizer():
+    ai = AI()
+
+    messy = "*looks away* hey #wewebrosmatter #wewebrosmatter #wewebrosmatter status is up."
+    cleaned = ai._sanitize_response(messy)
+    assert "*looks away*" not in cleaned
+    assert cleaned.count("#wewebrosmatter") <= 1
+
+    long_text = "One. Two. Three. Four. Five."
+    cleaned_long = ai._sanitize_response(long_text)
+    assert cleaned_long.count(".") <= ai.max_response_sentences
+
+    print("AI sanitizer tests passed.")
+
 if __name__ == "__main__":
     asyncio.run(test_humanizer())
     asyncio.run(test_autonomy())
     test_required_env_validation()
+    test_ai_sanitizer()
