@@ -261,15 +261,14 @@ def test_ai_sanitizer():
 
 
 async def test_friendly_fire():
-    """Friendly-fire: two UC-AIv3 instances should be able to bat messages back and forth,
-    but stop after BOT_CONVO_MAX_TURNS exchanges to prevent infinite loops."""
+    """Friendly-fire: two UC-AIv3 instances should be able to talk to each other,
+    and stop only when a goodbye is detected (close_convo). Non-friendly bots are always blocked."""
 
     env_base = {
         "AUTONOMY_MODE": "social",
         "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
         "PROACTIVE_COOLDOWN_SECONDS": "0",
-        "FRIENDLY_BOT_IDS": "777",   # ID of the other UC-AIv3 instance
-        "BOT_CONVO_MAX_TURNS": "2",
+        "FRIENDLY_BOT_IDS": "777",
     }
 
     with patch.dict(os.environ, env_base, clear=False):
@@ -299,30 +298,6 @@ async def test_friendly_fire():
         assert result2 == "direct_reply", f"Expected direct_reply, got {result2}"
         print("Friendly-fire: friendly bot reply triggers response — passed.")
 
-        # After BOT_CONVO_MAX_TURNS exchanges, bot should disengage.
-        # Already 2 turns recorded (one direct_mention + one direct_reply).
-        # One more to hit the limit of 3.
-        msg3 = MagicMock()
-        msg3.author = FakeAuthor(777, is_bot=True)
-        msg3.mentions = [MagicMock(id=123)]
-        msg3.reference = None
-        msg3.channel = MagicMock()
-        msg3.channel.id = 500
-        result3 = await engine.get_reply_reason(msg3, [])
-        assert result3 is None, f"Expected None (turn limit reached), got {result3}"
-        print("Friendly-fire: turn limit reached, bot disengages — passed.")
-
-        # A human speaking resets the turn counter — bot should engage again.
-        human_msg = MagicMock()
-        human_msg.author = FakeAuthor(42, is_bot=False)
-        human_msg.mentions = [MagicMock(id=123)]
-        human_msg.reference = None
-        human_msg.channel = MagicMock()
-        human_msg.channel.id = 500
-        result_human = await engine.get_reply_reason(human_msg, [])
-        assert result_human == "direct_mention", f"Expected direct_mention after reset, got {result_human}"
-        print("Friendly-fire: human resets turn counter, bot re-engages — passed.")
-
         # Non-friendly bot should NOT trigger a response.
         hostile_msg = MagicMock()
         hostile_msg.author = FakeAuthor(888, is_bot=True)
@@ -335,9 +310,66 @@ async def test_friendly_fire():
         print("Friendly-fire: non-friendly bot does not trigger response — passed.")
 
 
+async def test_convo_close():
+    """Conversation-close: after close_convo(), friendly-bot messages are ignored until cooldown expires."""
+
+    env_base = {
+        "AUTONOMY_MODE": "social",
+        "AUTONOMY_ALLOWED_CHANNEL_IDS": "",
+        "PROACTIVE_COOLDOWN_SECONDS": "0",
+        "FRIENDLY_BOT_IDS": "777",
+        "BOT_CONVO_MAX_TURNS": "10",
+        "CONVO_CLOSE_COOLDOWN_SECONDS": "60",
+    }
+
+    with patch.dict(os.environ, env_base, clear=False):
+        engine = AutonomyEngine(bot_id=123)
+
+        # Verify friendly bot can respond normally before close.
+        msg = MagicMock()
+        msg.author = FakeAuthor(777, is_bot=True)
+        msg.mentions = [MagicMock(id=123)]
+        msg.reference = None
+        msg.channel = MagicMock()
+        msg.channel.id = 600
+        before_result = await engine.get_reply_reason(msg, [])
+        assert before_result == "direct_mention", f"Expected direct_mention before close, got {before_result}"
+        print("Convo-close: friendly bot triggers response before close — passed.")
+
+        # Close the conversation.
+        engine.close_convo(600)
+        assert engine.is_convo_closed(600), "Expected convo to be closed."
+        print("Convo-close: is_convo_closed() returns True immediately after close — passed.")
+
+        # Friendly bot tries to respond — should now be blocked.
+        msg2 = MagicMock()
+        msg2.author = FakeAuthor(777, is_bot=True)
+        msg2.mentions = [MagicMock(id=123)]
+        msg2.reference = None
+        msg2.channel = MagicMock()
+        msg2.channel.id = 600
+        after_result = await engine.get_reply_reason(msg2, [])
+        assert after_result is None, f"Expected None after close, got {after_result}"
+        print("Convo-close: friendly bot ignored after close — passed.")
+
+        # Expiry: manually expire the cooldown and confirm the block is lifted.
+        engine._convo_closed_until_by_channel[600] = 0  # force expiry
+        assert not engine.is_convo_closed(600), "Expected convo to be open after expiry."
+        msg3 = MagicMock()
+        msg3.author = FakeAuthor(777, is_bot=True)
+        msg3.mentions = [MagicMock(id=123)]
+        msg3.reference = None
+        msg3.channel = MagicMock()
+        msg3.channel.id = 600
+        expired_result = await engine.get_reply_reason(msg3, [])
+        assert expired_result == "direct_mention", f"Expected direct_mention after expiry, got {expired_result}"
+        print("Convo-close: friendly bot re-engaged after cooldown expiry — passed.")
+
+
 if __name__ == "__main__":
     asyncio.run(test_humanizer())
     asyncio.run(test_autonomy())
     test_required_env_validation()
     test_ai_sanitizer()
     asyncio.run(test_friendly_fire())
+    asyncio.run(test_convo_close())

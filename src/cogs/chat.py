@@ -18,6 +18,92 @@ class Chat(commands.Cog):
         self.autonomy_engine = AutonomyEngine(bot.user.id if bot.user else 0)
         self.context_isolation_mode = os.getenv("CONTEXT_ISOLATION_MODE", "smart").strip().lower()
         self.live_context_limit = int(os.getenv("LIVE_CONTEXT_LIMIT", "12"))
+        # Runtime ignore list: user/bot IDs this bot will not respond to until cleared.
+        self._ignored_for_session: set = set()
+
+    async def _resolve_command_targets(self, message) -> list:
+        """Return IDs of target users from @mentions, or by name-matching recent history."""
+        bot_id = self.bot.user.id if self.bot.user else 0
+        targets = [u.id for u in message.mentions if u.id != bot_id]
+        if targets:
+            return targets
+        # No @mentions — scan recent history for bots whose name appears in the message.
+        content_lower = message.content.lower()
+        try:
+            async for item in message.channel.history(limit=30):
+                if item.author.bot and item.author.id != bot_id:
+                    name = (getattr(item.author, "display_name", None) or item.author.name).lower()
+                    if name in content_lower or any(part in content_lower for part in name.split() if len(part) > 2):
+                        if item.author.id not in targets:
+                            targets.append(item.author.id)
+                        break
+        except Exception:
+            pass
+        return targets
+
+    async def _handle_control_command(self, message) -> bool:
+        """
+        Detects runtime commands like "stop replying to veebot" or "you can talk to them again".
+        Returns True if the message was a control command and has been handled.
+        """
+        content_lower = message.content.lower()
+        # Quick pre-filter to avoid unnecessary AI calls.
+        has_stop_signal = any(w in content_lower for w in ("stop", "don't", "dont", "ignore", "no more", "never", "not reply", "no reply"))
+        has_resume_signal = any(w in content_lower for w in ("unignore", "un-ignore", "resume", "can reply", "reply to them", "talk to them", "respond to"))
+        if not has_stop_signal and not has_resume_signal:
+            return False
+
+        if has_stop_signal:
+            is_stop = await ai_service.classify(
+                f'Message: "{message.content}"\n'
+                "Is the user telling the bot to completely stop replying to or engaging with a specific person?"
+            )
+            if is_stop:
+                targets = await self._resolve_command_targets(message)
+                if not targets:
+                    return False
+                for uid in targets:
+                    self._ignored_for_session.add(uid)
+                names = ", ".join(f"<@{uid}>" for uid in targets)
+                async with message.channel.typing():
+                    await asyncio.sleep(humanizer.calculate_thinking_delay())
+                await message.reply(f"got it, not engaging with {names} anymore", mention_author=False)
+                logger.info("Session ignore added: %s", targets)
+                return True
+
+        if has_resume_signal:
+            is_resume = await ai_service.classify(
+                f'Message: "{message.content}"\n'
+                "Is the user telling the bot it can resume replying to someone they previously asked it to ignore?"
+            )
+            if is_resume:
+                targets = await self._resolve_command_targets(message)
+                for uid in targets:
+                    self._ignored_for_session.discard(uid)
+                if targets:
+                    names = ", ".join(f"<@{uid}>" for uid in targets)
+                    await message.reply(f"aight, back to normal with {names}", mention_author=False)
+                logger.info("Session ignore removed: %s", targets)
+                return True
+
+        return False
+
+    async def _is_conversation_ending(self, text: str) -> bool:
+        """Return True if the text signals the sender is ending the conversation."""
+        low = text.lower()
+        # Quick pre-filter to avoid unnecessary classify calls.
+        hints = (
+            "bye", "peace", "later", "goodbye", "goodnight", "good night", "gtg",
+            "gotta go", "heading out", "signing off", "enough", "done", "cya",
+            "see ya", "see you later", "take care", "leaving", "log off", "out for",
+            "catch you", "nirvana", "sleep", "done talking", "done for now",
+        )
+        if not any(h in low for h in hints):
+            return False
+        return await ai_service.classify(
+            f'Message: "{text}"\n'
+            "Is this message saying goodbye, wrapping up the conversation, or indicating the person is leaving or done talking?"
+        )
 
     async def _detect_cross_channel_intent(self, message):
         """
@@ -231,20 +317,37 @@ class Chat(commands.Cog):
                 is_bot=message.author.bot
             )
 
-            # 2. Cross-channel send pipeline (takes priority over AI).
+            # 2. Skip any response if this sender is on the session ignore list.
+            if message.author.id in self._ignored_for_session:
+                return
+
+            # 3. Cross-channel send pipeline (takes priority over AI).
             if not message.author.bot and message.channel_mentions:
                 target = await self._detect_cross_channel_intent(message)
                 if target:
                     await self._execute_cross_channel_send(message, target)
                     return
 
-            # 3. Get shared context to evaluate autonomy trigger.
+            # 4. Get shared context to evaluate autonomy trigger.
             shared_context = await db.get_recent_context(channel_id=message.channel.id, limit=10)
 
-            # 4. Autonomy check with reason.
+            # 5. Autonomy check with reason.
             reply_reason = await self.autonomy_engine.get_reply_reason(message, shared_context)
             if reply_reason:
                 direct_response = reply_reason in {"direct_mention", "direct_reply"}
+
+                # 5a. If a friendly bot is saying goodbye, close the convo and let them have the last word.
+                if message.author.bot and await self._is_conversation_ending(message.content):
+                    self.autonomy_engine.close_convo(message.channel.id)
+                    logger.info("Friendly bot goodbye detected; closing convo in channel %s.", message.channel.id)
+                    return
+
+                # 6. Check for runtime control commands on direct interactions, before generating a reply.
+                if direct_response and not message.author.bot:
+                    handled = await self._handle_control_command(message)
+                    if handled:
+                        return
+
                 if direct_response:
                     # For direct interactions, prefer fresh live context over stale DB history.
                     response_context = await self._build_live_context(message)
@@ -323,6 +426,12 @@ class Chat(commands.Cog):
                 author_name=self.bot.user.name,
                 is_bot=True,
             )
+
+            # 8. If the bot's own reply sounds like a goodbye and the conversation partner is
+            #    a friendly bot, seal the channel so the other bot's follow-up goes unanswered.
+            if message.author.bot and await self._is_conversation_ending(response_text):
+                self.autonomy_engine.close_convo(message.channel.id)
+                logger.info("Bot sent a goodbye; closing convo in channel %s.", message.channel.id)
         except Exception as e:
             logger.exception("Failed to handle response for message %s: %s", message.id, e)
 
