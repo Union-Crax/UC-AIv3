@@ -109,6 +109,33 @@ class AI:
                 return True
         return True
 
+    async def classify(self, question: str) -> bool:
+        """
+        Ask the model a yes/no question. Returns True for YES, False for NO/error.
+        Uses a minimal prompt with no system context to keep it fast and cheap.
+        """
+        if not self.client:
+            return False
+        try:
+            completion = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Answer only YES or NO. No explanation, no punctuation.",
+                    },
+                    {"role": "user", "content": question},
+                ],
+                max_tokens=2,
+                temperature=0.0,
+                timeout=10,
+            )
+            answer = (completion.choices[0].message.content or "").strip().upper()
+            return answer.startswith("YES")
+        except Exception as exc:
+            logger.debug("classify() failed: %s", exc)
+            return False
+
     async def generate_response(self, messages: list) -> str:
         if not self.client:
             return "Error: AI not configured."

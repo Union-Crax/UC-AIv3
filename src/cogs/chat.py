@@ -3,7 +3,6 @@ from discord.ext import commands
 import logging
 import asyncio
 import os
-import time
 from collections import Counter
 from services.db import db
 from services.ai import ai_service
@@ -18,49 +17,42 @@ class Chat(commands.Cog):
         self.autonomy_engine = AutonomyEngine(bot.user.id if bot.user else 0)
         self.context_isolation_mode = os.getenv("CONTEXT_ISOLATION_MODE", "smart").strip().lower()
         self.live_context_limit = int(os.getenv("LIVE_CONTEXT_LIMIT", "12"))
-        # Pending cross-channel sends: user_id -> {target_channel, original_channel_id, expires_at}
-        self._pending_channel_sends: dict = {}
 
-    def _detect_cross_channel_intent(self, message):
+    async def _detect_cross_channel_intent(self, message):
         """
-        Returns the first mentioned channel (not the current one) if the message
-        expresses intent to send something to another channel.
+        Returns the first mentioned channel (not the current one) if the AI
+        decides the message is a request to go post something there.
         """
         if not getattr(message, "channel_mentions", None):
             return None
-        content_lower = message.content.lower()
-        intent_phrases = (
-            "go to", "go in", "head to", "head in",
-            "send to", "send in", "post in", "post to",
-            "jump in", "jump to", "pop in", "drop in",
-        )
-        if not any(phrase in content_lower for phrase in intent_phrases):
-            return None
         for ch in message.channel_mentions:
-            if ch.id != message.channel.id:
+            if ch.id == message.channel.id:
+                continue
+            question = (
+                f'The user sent this message: "{message.content}"\n'
+                f'Are they asking a Discord bot to go post something in the channel #{ch.name}?'
+            )
+            if await ai_service.classify(question):
                 return ch
         return None
 
     async def _execute_cross_channel_send(self, message, target_channel):
-        topic = message.content.strip()
-        if not topic:
-            await message.reply("nothing to go off lol, try again", mention_author=True)
-            return
         try:
-            # Fetch recent context from the target channel so the AI sounds like it belongs there.
+            # Pull recent target-channel context so the AI fits the vibe there.
             target_context = await db.get_recent_context(channel_id=target_channel.id, limit=8)
+            bot_user_id = self.bot.user.id if self.bot.user else None
             ai_messages = [
                 {
                     "role": "system",
                     "content": (
-                        f"You are about to post in #{target_channel.name} as a regular community member. "
-                        f"Write a single natural Discord message on this topic: {topic}. "
-                        "Do NOT explain what you're doing or acknowledge you're a bot. "
-                        "Just write the message itself, as if you're genuinely posting in that channel."
+                        f"You are joining #{target_channel.name} as a regular community member. "
+                        f"<@{message.author.id}> asked you to come here. "
+                        "Write one natural Discord message to kick off the conversation — "
+                        f"start by mentioning <@{message.author.id}> exactly once, then say something fitting for this channel. "
+                        "Do not explain that you are a bot or that you were asked to come here."
                     ),
                 }
             ]
-            bot_user_id = self.bot.user.id if self.bot.user else None
             for msg in target_context:
                 is_own = bool(msg.get("is_bot")) and msg.get("user_id") == bot_user_id
                 role = "assistant" if is_own else "user"
@@ -72,11 +64,10 @@ class Chat(commands.Cog):
                 generated = await ai_service.generate_response(ai_messages)
 
             if not generated or not generated.strip():
-                await message.reply("ai blanked on me, try again", mention_author=True)
+                await message.reply("ai blanked, couldn't make it over there", mention_author=False)
                 return
 
             await target_channel.send(generated)
-            await message.reply(f"posted in <#{target_channel.id}> 👌", mention_author=True)
             await db.log_message(
                 user_id=self.bot.user.id,
                 channel_id=target_channel.id,
@@ -85,10 +76,10 @@ class Chat(commands.Cog):
                 is_bot=True,
             )
         except discord.Forbidden:
-            await message.reply(f"no perms to post in <#{target_channel.id}> 😬 someone give me access", mention_author=True)
+            await message.reply(f"no perms to post in <#{target_channel.id}> 😬 someone give me access", mention_author=False)
         except Exception as exc:
             logger.exception("Cross-channel send failed: %s", exc)
-            await message.reply("something went wrong, my bad", mention_author=True)
+            await message.reply("something went wrong, my bad", mention_author=False)
 
     def _resolve_context_user_id(self, message, reply_reason: str):
         mode = self.context_isolation_mode
@@ -185,7 +176,7 @@ class Chat(commands.Cog):
         ]
 
         if direct_response:
-            guidance.append("This is a direct interaction, start your reply by mentioning the triggering user exactly once.")
+            guidance.append("This is a direct interaction. Do NOT start your reply with a mention — the Discord reply thread already shows who you're talking to. Only mention someone mid-reply if you genuinely need to address them by name.")
         else:
             guidance.append("This is a proactive jump-in, only mention someone if truly needed.")
 
@@ -216,31 +207,11 @@ class Chat(commands.Cog):
             )
 
             # 2. Cross-channel send pipeline (takes priority over AI).
-            if not message.author.bot:
-                pending = self._pending_channel_sends.get(message.author.id)
-                if pending:
-                    if time.time() > pending["expires_at"]:
-                        # Request timed out — silently discard.
-                        del self._pending_channel_sends[message.author.id]
-                    elif message.channel.id == pending["original_channel_id"]:
-                        target_channel = pending["target_channel"]
-                        del self._pending_channel_sends[message.author.id]
-                        await self._execute_cross_channel_send(message, target_channel)
-                        return
-
-                if message.channel_mentions:
-                    target = self._detect_cross_channel_intent(message)
-                    if target:
-                        self._pending_channel_sends[message.author.id] = {
-                            "target_channel": target,
-                            "original_channel_id": message.channel.id,
-                            "expires_at": time.time() + 60,
-                        }
-                        await message.reply(
-                            f"aight, what should I say in <#{target.id}>?",
-                            mention_author=True,
-                        )
-                        return
+            if not message.author.bot and message.channel_mentions:
+                target = await self._detect_cross_channel_intent(message)
+                if target:
+                    await self._execute_cross_channel_send(message, target)
+                    return
 
             # 3. Get shared context to evaluate autonomy trigger.
             shared_context = await db.get_recent_context(channel_id=message.channel.id, limit=10)
@@ -315,7 +286,7 @@ class Chat(commands.Cog):
             # 6. Send response after typing context closes so typing indicator does not linger.
             direct_response = reply_reason in {"direct_mention", "direct_reply"}
             if direct_response:
-                await message.reply(response_text, mention_author=True)
+                await message.reply(response_text, mention_author=False)
             else:
                 await message.channel.send(response_text)
 
